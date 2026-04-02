@@ -1,6 +1,7 @@
 use arbitrary_int::{u2, u3, u4, u6};
 
 pub const L2C_BASE_ADDR: usize = 0xF8F0_2000;
+const INTERRUPT_STATUS_MASK: u32 = 0x1FF;
 
 #[derive(derive_mmio::Mmio)]
 #[repr(C)]
@@ -204,6 +205,13 @@ pub struct InterruptControl {
     event_counter_overflow_increment: bool,
 }
 
+impl InterruptControl {
+    /// Builds a zero-based clear value from the raw interrupt status bits.
+    pub const fn clear_from_status(status: InterruptStatus) -> Self {
+        Self::new_with_raw_value(status.raw_value() & INTERRUPT_STATUS_MASK)
+    }
+}
+
 /// L2 Cache register access.
 #[derive(derive_mmio::Mmio)]
 #[repr(C)]
@@ -305,5 +313,21 @@ impl Registers {
     /// interfere with each other.
     pub const unsafe fn new_mmio_fixed() -> MmioRegisters<'static> {
         unsafe { Self::new_mmio_at(L2C_BASE_ADDR) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    #[test]
+    fn clear_from_status_replays_only_the_interrupt_bits() {
+        let status = InterruptStatus::new_with_raw_value(u32::MAX);
+        assert_eq!(
+            InterruptControl::clear_from_status(status).raw_value(),
+            INTERRUPT_STATUS_MASK
+        );
     }
 }

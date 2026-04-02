@@ -14,6 +14,7 @@ categories = ["embedded", "no-std", "hardware-support"]
 critical-section = "1"
 once_cell = { version = "1", default-features = false, features = ["critical-section"] }
 zynq7000-hal = { path = "../zynq7000-hal", version = "0.1" }
+thiserror = { version = "2", default-features = false }
 
 embassy-time-driver = "0.2"
 embassy-time-queue-utils = "0.3"

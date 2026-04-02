@@ -6,25 +6,21 @@ use aarch32_cpu::asm::nop;
 use core::panic::PanicInfo;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
-use embedded_hal::digital::StatefulOutputPin;
-use embedded_io::Write;
-use log::{error, info};
-use zynq7000::Peripherals;
-use zynq7000_hal::{
-    BootMode,
-    clocks::Clocks,
-    gic::{GicConfigurator, GicInterruptHelper, Interrupt},
-    gpio::{Output, PinState, mio},
-    gtc::GlobalTimerCounter,
-    l2_cache,
-    time::Hertz,
-    uart::{ClockConfig, Config, TxAsync, Uart, on_interrupt_tx},
+use embassy_zynq7000::{
+    Config as EmbassyConfig, InterruptConfig, L2CacheMode, LevelShifterConfig, bind_interrupts,
 };
+use embassy_zynq7000::{
+    clocks,
+    gpio::{Output, PinState},
+    log as embassy_log, uart,
+};
+use log::{LevelFilter, error, info};
 
 use zynq7000_rt as _;
 
-// Define the clock frequency as a constant
-const PS_CLOCK_FREQUENCY: Hertz = Hertz::from_raw(33_333_300);
+bind_interrupts!(struct Irqs {
+    Uart1 => embassy_zynq7000::uart::InterruptHandler<embassy_zynq7000::peripherals::UART1>;
+});
 
 /// Entry point which calls the embassy main method.
 #[zynq7000_rt::entry]
@@ -34,90 +30,51 @@ fn entry_point() -> ! {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
-    let mut dp = Peripherals::take().unwrap();
-    l2_cache::init_with_defaults(&mut dp.l2c);
-
-    // Clock was already initialized by PS7 Init TCL script or FSBL, we just read it.
-    let clocks = Clocks::new_from_regs(PS_CLOCK_FREQUENCY).unwrap();
-    // Set up the global interrupt controller.
-    let mut gic = GicConfigurator::new_with_init(dp.gicc, dp.gicd);
-    gic.enable_all_interrupts();
-    gic.set_all_spi_interrupt_targets_cpu0();
-    gic.enable();
-    unsafe {
-        gic.enable_interrupts();
-    }
-    // Set up global timer counter and embassy time driver.
-    let gtc = GlobalTimerCounter::new(dp.gtc, clocks.arm_clocks());
-    zynq7000_embassy::init(clocks.arm_clocks(), gtc);
-
-    let mio_pins = mio::Pins::new(dp.gpio);
+    let p = embassy_zynq7000::init(EmbassyConfig {
+        ps_clock_frequency: zedboard_bsp::PS_CLOCK_FREQUENCY,
+        l2_cache_mode: L2CacheMode::Initialize,
+        level_shifter_config: Some(LevelShifterConfig::EnableAll),
+        interrupt_config: Some(InterruptConfig::AllInterruptsToCpu0),
+    })
+    .unwrap();
 
     // Set up the UART, we are logging with it.
-    let uart_clk_config = ClockConfig::new_autocalc_with_error(clocks.io_clocks(), 115200)
-        .unwrap()
-        .0;
-    let mut uart = Uart::new_with_mio_for_uart_1(
-        dp.uart_1,
-        Config::new_with_clk_config(uart_clk_config),
-        (mio_pins.mio48, mio_pins.mio49),
-    )
-    .unwrap();
-    uart.write_all(b"-- Zynq 7000 Logging example --\n\r")
-        .unwrap();
-    uart.flush().unwrap();
+    let uart_clk_config =
+        uart::ClockConfig::new_autocalc_with_error(clocks::get().io_clocks(), 115200)
+            .unwrap()
+            .0;
+    let uart = uart::Uart::new(
+        p.UART1,
+        p.MIO48,
+        p.MIO49,
+        Irqs,
+        uart::Config::new_with_clk_config(uart_clk_config),
+    );
+    let (mut logger, _rx) = uart.split();
+    embedded_io::Write::write_all(&mut logger, b"-- Zynq 7000 Logging example --\n\r").unwrap();
+    embedded_io::Write::flush(&mut logger).unwrap();
 
-    let (tx, _rx) = uart.split();
-    let mut logger = TxAsync::new(tx);
+    embassy_log::rb::init(LevelFilter::Trace);
 
-    zynq7000_hal::log::rb::init(log::LevelFilter::Trace);
-
-    let boot_mode = BootMode::new_from_regs();
-    info!("Boot mode: {:?}", boot_mode);
-
-    let led = Output::new_for_mio(mio_pins.mio7, PinState::Low);
+    let led = Output::new(p.MIO7, PinState::Low);
     spawner.spawn(led_task(led).unwrap());
     let mut log_buf: [u8; 2048] = [0; 2048];
-    let frame_queue = zynq7000_hal::log::rb::get_frame_queue();
+    let frame_queue = embassy_log::rb::get_frame_queue();
     loop {
         let next_frame_len = frame_queue.receive().await;
-        zynq7000_hal::log::rb::read_next_frame(next_frame_len, &mut log_buf);
+        embassy_log::rb::read_next_frame(next_frame_len, &mut log_buf);
         logger.write(&log_buf[0..next_frame_len]).await;
     }
 }
 
 #[embassy_executor::task]
-async fn led_task(mut mio_led: Output) {
+async fn led_task(mut mio_led: Output<'static>) {
     let mut ticker = Ticker::every(Duration::from_millis(1000));
     loop {
-        mio_led.toggle().unwrap();
+        mio_led.toggle();
         info!("Toggling LED");
         ticker.next().await;
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn _irq_handler() {
-    let mut gic_helper = GicInterruptHelper::new();
-    let irq_info = gic_helper.acknowledge_interrupt();
-    match irq_info.interrupt() {
-        Interrupt::Sgi(_) => (),
-        Interrupt::Ppi(ppi_interrupt) => {
-            if ppi_interrupt == zynq7000_hal::gic::PpiInterrupt::GlobalTimer {
-                unsafe {
-                    zynq7000_embassy::on_interrupt();
-                }
-            }
-        }
-        Interrupt::Spi(spi_interrupt) => {
-            if spi_interrupt == zynq7000_hal::gic::SpiInterrupt::Uart1 {
-                on_interrupt_tx(zynq7000_hal::uart::UartId::Uart1);
-            }
-        }
-        Interrupt::Invalid(_) => (),
-        Interrupt::Spurious => (),
-    }
-    gic_helper.end_of_interrupt(irq_info);
 }
 
 #[zynq7000_rt::exception(DataAbort)]

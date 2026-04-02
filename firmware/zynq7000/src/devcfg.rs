@@ -1,6 +1,7 @@
 use arbitrary_int::{u4, u5, u7};
 
 pub const DEVCFG_BASE_ADDR: usize = 0xF8007000;
+const INTERRUPT_ACK_MASK: u32 = 0xF8F7_F87F;
 
 #[bitbybit::bitenum(u1, exhaustive = true)]
 #[derive(Debug, PartialEq, Eq)]
@@ -213,6 +214,23 @@ pub struct Interrupt {
     negative_edge_pl_init: bool,
 }
 
+impl Interrupt {
+    /// Builds a zero-based W1C write that acknowledges all pending devcfg interrupt bits.
+    pub const fn ack_all() -> Self {
+        Self::new_with_raw_value(INTERRUPT_ACK_MASK)
+    }
+
+    /// Builds a zero-based W1C write that acknowledges the interrupt bits present in `status`.
+    pub const fn ack_from(status: Self) -> Self {
+        Self::new_with_raw_value(status.raw_value() & INTERRUPT_ACK_MASK)
+    }
+
+    /// Builds a zero-based W1C write that acknowledges only the PL programming-done bit.
+    pub const fn ack_pl_programming_done() -> Self {
+        Self::ZERO.with_pl_programming_done(true)
+    }
+}
+
 #[bitbybit::bitfield(u32, debug, defmt_bitfields(feature = "defmt"), forbid_overlaps)]
 pub struct MiscControl {
     #[bits(28..=31, r)]
@@ -315,5 +333,28 @@ impl Registers {
     /// interfere with each other.
     pub unsafe fn new_mmio_fixed() -> MmioRegisters<'static> {
         unsafe { Self::new_mmio_at(DEVCFG_BASE_ADDR) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    #[test]
+    fn ack_all_sets_all_interrupt_bits() {
+        assert_eq!(Interrupt::ack_all().raw_value(), INTERRUPT_ACK_MASK);
+    }
+
+    #[test]
+    fn ack_from_masks_out_reserved_bits() {
+        let status = Interrupt::new_with_raw_value(u32::MAX);
+        assert_eq!(Interrupt::ack_from(status).raw_value(), INTERRUPT_ACK_MASK);
+    }
+
+    #[test]
+    fn ack_pl_programming_done_sets_only_the_programming_done_bit() {
+        assert_eq!(Interrupt::ack_pl_programming_done().raw_value(), 1 << 2);
     }
 }

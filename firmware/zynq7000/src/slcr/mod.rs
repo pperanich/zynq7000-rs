@@ -1,7 +1,7 @@
 //! System Level Control Registers (slcr)
 //!
 //! Writing any of these registers required unlocking the SLCR first.
-use arbitrary_int::u4;
+use arbitrary_int::{u4, u6};
 pub use clocks::{ClockControlRegisters, MmioClockControlRegisters};
 pub use reset::{MmioResetControl, ResetControl};
 
@@ -10,6 +10,7 @@ const CLOCK_CONTROL_OFFSET: usize = 0x100;
 const RESET_BLOCK_OFFSET: usize = 0x200;
 const GPIOB_OFFSET: usize = 0xB00;
 const DDRIOB_OFFSET: usize = 0xB40;
+const REBOOT_STATUS_SOFT_RESET_MASK: u32 = 0xF0FF_FFFF;
 
 pub mod clocks;
 pub mod ddriob;
@@ -77,6 +78,39 @@ pub struct BootModeRegister {
     boot_mode: u4,
 }
 
+#[bitbybit::bitfield(u32, default = 0x0, debug)]
+pub struct RebootStatus {
+    /// CPU0 warm-restart state. Linux uses this as the CPU0 die/running flag.
+    #[bit(31, rw)]
+    cpu0_stopped: bool,
+    /// CPU1 warm-restart state. Linux uses this as the CPU1 die/running flag.
+    #[bit(30, rw)]
+    cpu1_stopped: bool,
+    /// Persistent reboot state that survives non-POR resets.
+    #[bits(24..=29, rw)]
+    reboot_state: u6,
+    /// Reset-cause/status bits populated by BootROM and reset logic.
+    ///
+    /// AMD AR52030 notes that BootROM population of bits `[22:16]` is unreliable in some cases,
+    /// so keep them grouped until they are validated directly against UG585 behavior.
+    #[bits(16..=23, r)]
+    reset_cause_bits: u8,
+    #[bits(0..=15, r)]
+    bootrom_error_code: u16,
+}
+
+impl RebootStatus {
+    /// Builds a write value that preserves the reboot-status bits as read.
+    pub const fn clear_from(status: Self) -> Self {
+        Self::new_with_raw_value(status.raw_value())
+    }
+
+    /// Builds the reboot-status value used by the current soft-reset workaround.
+    pub const fn for_soft_reset(current: Self) -> Self {
+        Self::new_with_raw_value(current.raw_value() & REBOOT_STATUS_SOFT_RESET_MASK)
+    }
+}
+
 #[bitbybit::bitenum(u4)]
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -123,7 +157,7 @@ pub struct Registers {
 
     _gap2: [u32; 0x02],
 
-    reboot_status: u32,
+    reboot_status: RebootStatus,
     boot_mode: BootModeRegister,
 
     _gap3: [u32; 0x28],
@@ -203,5 +237,37 @@ impl Registers {
     /// ensuring that there are no read-modify-write races on any of the registers.
     pub unsafe fn new_mmio_fixed() -> MmioRegisters<'static> {
         unsafe { Self::new_mmio_at(SLCR_BASE_ADDR) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    #[test]
+    fn reboot_status_clear_from_preserves_the_raw_value() {
+        let status = RebootStatus::new_with_raw_value(0xDEAD_BEEF);
+        assert_eq!(RebootStatus::clear_from(status).raw_value(), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn reboot_status_for_soft_reset_applies_the_existing_mask() {
+        let status = RebootStatus::new_with_raw_value(0xFFFF_FFFF);
+        assert_eq!(
+            RebootStatus::for_soft_reset(status).raw_value(),
+            REBOOT_STATUS_SOFT_RESET_MASK
+        );
+    }
+
+    #[test]
+    fn reboot_status_field_layout_matches_supported_semantics() {
+        let status = RebootStatus::new_with_raw_value(0xABCD_1234);
+        assert!(status.cpu0_stopped());
+        assert!(!status.cpu1_stopped());
+        assert_eq!(status.reboot_state().value(), 0b101011);
+        assert_eq!(status.reset_cause_bits(), 0xCD);
+        assert_eq!(status.bootrom_error_code(), 0x1234);
     }
 }

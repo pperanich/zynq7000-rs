@@ -33,6 +33,28 @@ use zynq7000_hal::{
 use zynq7000::{Peripherals, slcr::LevelShifterConfig, spi::DelayControl};
 use zynq7000_rt as _;
 
+#[derive(Copy, Clone)]
+struct Uart1Irqs;
+
+unsafe impl
+    zynq7000_hal::interrupt::typelevel::Binding<
+        zynq7000_hal::interrupt::typelevel::Uart1,
+        zynq7000_hal::uart::InterruptHandler<zynq7000_hal::uart::Uart1>,
+    > for Uart1Irqs
+{
+}
+
+#[derive(Copy, Clone)]
+struct Spi1Irqs;
+
+unsafe impl
+    zynq7000_hal::interrupt::typelevel::Binding<
+        zynq7000_hal::interrupt::typelevel::Spi1,
+        zynq7000_hal::spi::InterruptHandler<zynq7000_hal::spi::Spi1>,
+    > for Spi1Irqs
+{
+}
+
 // Define the clock frequency as a constant
 const PS_CLOCK_FREQUENCY: Hertz = Hertz::from_raw(33_333_300);
 
@@ -76,7 +98,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // Set up global timer counter and embassy time driver.
     let gtc = GlobalTimerCounter::new(dp.gtc, clocks.arm_clocks());
-    zynq7000_embassy::init(clocks.arm_clocks(), gtc);
+    zynq7000_embassy::time::init(clocks.arm_clocks(), gtc);
 
     // Set up the UART, we are logging with it.
     let uart_clk_config = uart::ClockConfig::new_autocalc_with_error(clocks.io_clocks(), 115200)
@@ -164,9 +186,9 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 #[embassy_executor::task]
-pub async fn logger_task(uart: uart::Uart) {
+pub async fn logger_task(uart: uart::TypedUart<uart::Uart1>) {
     let (tx, _) = uart.split();
-    let mut tx_async = TxAsync::new(tx);
+    let mut tx_async = TxAsync::new(tx, Uart1Irqs);
     let frame_queue = zynq7000_hal::log::rb::get_frame_queue();
     let mut log_buf: [u8; 2048] = [0; 2048];
     loop {
@@ -211,7 +233,7 @@ pub async fn non_blocking_application(
     spi: spi::Spi,
 ) -> ! {
     let mut delay = Delay;
-    let spi_async = SpiAsync::new(spi);
+    let spi_async = SpiAsync::new::<spi::Spi1>(spi, Spi1Irqs);
     let spi_dev = SpiWithHwCsAsync::new(spi_async, spi::ChipSelect::Slave0, delay.clone());
     let mut l3gd20 = l3gd20::asynchronous::spi::L3gd20::new(spi_dev)
         .await
@@ -246,7 +268,7 @@ pub extern "C" fn _irq_handler() {
         Interrupt::Ppi(ppi_interrupt) => {
             if ppi_interrupt == zynq7000_hal::gic::PpiInterrupt::GlobalTimer {
                 unsafe {
-                    zynq7000_embassy::on_interrupt();
+                    zynq7000_embassy::time::on_interrupt();
                 }
             }
         }

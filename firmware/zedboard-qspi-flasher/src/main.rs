@@ -11,15 +11,8 @@ use embedded_io::Write as _;
 use log::{error, info};
 use zedboard_bsp::qspi_spansion;
 use zynq7000_boot_image::BootHeader;
-use zynq7000_hal::{
-    BootMode, LevelShifterConfig, clocks, gpio, prelude::*, priv_tim, qspi, time::Hertz, uart,
-};
+use zynq7000_hal::{BootMode, LevelShifterConfig, gpio, prelude::*, priv_tim, qspi, uart};
 use zynq7000_rt as _;
-
-// Define the clock frequency as a constant.
-//
-// Not required for the PAC mode, is required for clean delays in HAL mode.
-const PS_CLOCK_FREQUENCY: Hertz = Hertz::from_raw(33_333_333);
 
 // TODO: Make this configurable somehow?
 const BOOT_BIN_BASE_ADDR: usize = 0x1000_0000;
@@ -41,13 +34,16 @@ const INIT_STRING: &str = "-- Zynq 7000 Zedboard QSPI flasher --\n\r";
 
 #[zynq7000_rt::entry]
 fn main() -> ! {
-    let periphs = zynq7000_hal::init(zynq7000_hal::Config {
-        init_l2_cache: true,
-        level_shifter_config: Some(LevelShifterConfig::EnableAll),
-        interrupt_config: Some(zynq7000_hal::InteruptConfig::AllInterruptsToCpu0),
+    let system = zynq7000_hal::init_system(zynq7000_hal::SystemConfig {
+        ps_clock_frequency: zedboard_bsp::PS_CLOCK_FREQUENCY,
+        hal: zynq7000_hal::Config {
+            init_l2_cache: true,
+            level_shifter_config: Some(LevelShifterConfig::EnableAll),
+            interrupt_config: Some(zynq7000_hal::InterruptConfig::AllInterruptsToCpu0),
+        },
     })
     .unwrap();
-    let clocks = clocks::Clocks::new_from_regs(PS_CLOCK_FREQUENCY).unwrap();
+    let (periphs, clocks) = system.into_parts();
 
     // Unwrap okay, we only call this once on core 0 here.
     let mut timer = priv_tim::CpuPrivateTimer::take(clocks.arm_clocks()).unwrap();
@@ -58,8 +54,8 @@ fn main() -> ! {
     let uart_clk_config = uart::ClockConfig::new_autocalc_with_error(clocks.io_clocks(), 115200)
         .unwrap()
         .0;
-    let mut uart = uart::Uart::new_with_mio_for_uart_1(
-        periphs.uart_1,
+    let mut uart = uart::TypedUart::<uart::Uart1>::new_with_mio(
+        uart::peripheral_1(periphs.uart_1),
         uart::Config::new_with_clk_config(uart_clk_config),
         (gpio_pins.mio.mio48, gpio_pins.mio.mio49),
     )
@@ -68,7 +64,7 @@ fn main() -> ! {
     // Safety: We are not multi-threaded yet.
     unsafe {
         zynq7000_hal::log::uart_blocking::init_unsafe_single_core(
-            uart,
+            uart.into(),
             log::LevelFilter::Info,
             false,
         )

@@ -229,6 +229,15 @@ pub enum DmaSelect {
     Adma2_64bits = 0b11,
 }
 
+#[bitbybit::bitenum(u2, exhaustive = true)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum AdmaErrorState {
+    Stop = 0b00,
+    FetchDescriptor = 0b01,
+    Reserved = 0b10,
+    TransferData = 0b11,
+}
+
 #[bitbybit::bitenum(u3, exhaustive = false)]
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -377,7 +386,20 @@ pub struct InterruptStatus {
 
 impl InterruptStatus {
     pub const ALL_BITS: u32 = 0x33FF06FF;
+
+    /// Builds a zero-based W1C value that acknowledges all sticky interrupt status bits.
+    pub const fn ack_all() -> Self {
+        Self::new_with_raw_value(Self::ALL_BITS)
+    }
+
+    /// Builds a zero-based W1C value that acknowledges the sticky interrupt status bits present
+    /// in `status`.
+    pub const fn ack_from(status: Self) -> Self {
+        Self::new_with_raw_value(status.raw_value() & Self::ALL_BITS)
+    }
 }
+
+const INTERRUPT_MASK_ALL_BITS: u32 = InterruptStatus::ALL_BITS | (1 << 15) | (1 << 8);
 
 #[bitbybit::bitfield(u32, default = 0x0, debug, defmt_bitfields(feature = "defmt"))]
 pub struct InterruptMask {
@@ -431,6 +453,13 @@ pub struct InterruptMask {
     command_complete: bool,
 }
 
+impl InterruptMask {
+    /// Builds a mask with all interrupt sources enabled except card interrupt.
+    pub const fn all_enabled_without_card_interrupt() -> Self {
+        Self::new_with_raw_value(INTERRUPT_MASK_ALL_BITS & !(1 << 8))
+    }
+}
+
 #[bitbybit::bitfield(u32, default = 0x0, debug, defmt_bitfields(feature = "defmt"))]
 pub struct Capabilities {
     #[bit(30, rw)]
@@ -475,6 +504,23 @@ pub struct BlockSizeRegister {
     transfer_block_size: u12,
 }
 
+#[bitbybit::bitfield(u32, debug)]
+pub struct AdmaErrorStatus {
+    #[bit(2, rw)]
+    length_mismatch_error: bool,
+    #[bits(0..=1, rw)]
+    error_state: AdmaErrorState,
+}
+
+impl AdmaErrorStatus {
+    /// Builds the write value used to clear ADMA errors.
+    pub const fn clear_error() -> Self {
+        Self::ZERO
+            .with_length_mismatch_error(true)
+            .with_error_state(AdmaErrorState::Stop)
+    }
+}
+
 #[derive(derive_mmio::Mmio)]
 #[repr(C)]
 pub struct Registers {
@@ -502,7 +548,7 @@ pub struct Registers {
     maximum_current_capabilities: u32,
     _gap_1: u32,
     force_event_register: u32,
-    adma_error_status: u32,
+    adma_error_status: AdmaErrorStatus,
     adma_system_address: u32,
     _gap_2: u32,
     boot_timeout_control: u32,
@@ -538,5 +584,40 @@ impl Registers {
     #[inline]
     pub const unsafe fn new_mmio_fixed_1() -> MmioRegisters<'static> {
         unsafe { Self::new_mmio_at(SDIO_BASE_ADDR_1) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    #[test]
+    fn interrupt_status_ack_helpers_mask_to_ackable_bits() {
+        let status = InterruptStatus::new_with_raw_value(u32::MAX);
+        assert_eq!(
+            InterruptStatus::ack_all().raw_value(),
+            InterruptStatus::ALL_BITS
+        );
+        assert_eq!(
+            InterruptStatus::ack_from(status).raw_value(),
+            InterruptStatus::ALL_BITS
+        );
+    }
+
+    #[test]
+    fn interrupt_mask_helper_enables_everything_except_card_interrupt() {
+        let mask = InterruptMask::all_enabled_without_card_interrupt();
+        assert!(!mask.card_interrupt());
+        assert_eq!(mask.raw_value(), INTERRUPT_MASK_ALL_BITS & !(1 << 8));
+    }
+
+    #[test]
+    fn adma_error_status_clear_helper_matches_existing_clear_pattern() {
+        let clear = AdmaErrorStatus::clear_error();
+        assert!(clear.length_mismatch_error());
+        assert_eq!(clear.error_state(), AdmaErrorState::Stop);
+        assert_eq!(clear.raw_value(), 1 << 2);
     }
 }

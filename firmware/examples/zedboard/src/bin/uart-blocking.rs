@@ -14,16 +14,12 @@ use log::{error, info};
 use zedboard::PS_CLOCK_FREQUENCY;
 use zynq7000_hal::{
     BootMode,
-    clocks::Clocks,
-    configure_level_shifter,
-    gic::{GicConfigurator, GicInterruptHelper, Interrupt},
     gpio::{GpioPins, Output, PinState},
     gtc::GlobalTimerCounter,
-    l2_cache,
     uart::{ClockConfig, Config, Uart},
 };
 
-use zynq7000::{Peripherals, slcr::LevelShifterConfig};
+use zynq7000::slcr::LevelShifterConfig;
 use zynq7000_rt as _;
 
 const INIT_STRING: &str = "-- Zynq 7000 Zedboard blocking UART example --\n\r";
@@ -97,32 +93,27 @@ impl UartMultiplexer {
 }
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
-    let mut dp = Peripherals::take().unwrap();
-    l2_cache::init_with_defaults(&mut dp.l2c);
-
-    // Enable PS-PL level shifters.
-    configure_level_shifter(LevelShifterConfig::EnableAll);
-    // Clock was already initialized by PS7 Init TCL script or FSBL, we just read it.
-    let clocks = Clocks::new_from_regs(PS_CLOCK_FREQUENCY).unwrap();
-    // Set up the global interrupt controller.
-    let mut gic = GicConfigurator::new_with_init(dp.gicc, dp.gicd);
-    gic.enable_all_interrupts();
-    gic.set_all_spi_interrupt_targets_cpu0();
-    gic.enable();
-    unsafe {
-        gic.enable_interrupts();
-    }
+    let system = zynq7000_hal::init_system(zynq7000_hal::SystemConfig {
+        ps_clock_frequency: PS_CLOCK_FREQUENCY,
+        hal: zynq7000_hal::Config {
+            init_l2_cache: true,
+            level_shifter_config: Some(LevelShifterConfig::EnableAll),
+            interrupt_config: Some(zynq7000_hal::InterruptConfig::AllInterruptsToCpu0),
+        },
+    })
+    .unwrap();
+    let (dp, clocks) = system.into_parts();
     let mut gpio_pins = GpioPins::new(dp.gpio);
 
     // Set up global timer counter and embassy time driver.
     let gtc = GlobalTimerCounter::new(dp.gtc, clocks.arm_clocks());
-    zynq7000_embassy::init(clocks.arm_clocks(), gtc);
+    zynq7000_embassy::time::init(clocks.arm_clocks(), gtc);
 
     // Set up the UART, we are logging with it.
     let uart_clk_config = ClockConfig::new_autocalc_with_error(clocks.io_clocks(), 115200)
         .unwrap()
         .0;
-    let mut log_uart = Uart::new_with_mio_for_uart_1(
+    let mut log_uart = zynq7000_hal::uart::TypedUart::<zynq7000_hal::uart::Uart1>::new_with_mio(
         dp.uart_1,
         Config::new_with_clk_config(uart_clk_config),
         (gpio_pins.mio.mio48, gpio_pins.mio.mio49),
@@ -140,8 +131,11 @@ async fn main(_spawner: Spawner) -> ! {
     };
 
     // UART0 routed through EMIO to PL pins.
-    let mut uart_0 =
-        Uart::new_with_emio(dp.uart_0, Config::new_with_clk_config(uart_clk_config)).unwrap();
+    let mut uart_0 = Uart::new_typed_with_emio::<zynq7000_hal::uart::Uart0>(
+        dp.uart_0,
+        Config::new_with_clk_config(uart_clk_config),
+    )
+    .unwrap();
     // Safety: Valid address of AXI UARTLITE.
     let mut uartlite = unsafe { AxiUartlite::new(AXI_UARTLITE_BASE_ADDR) };
 
@@ -216,22 +210,17 @@ async fn main(_spawner: Spawner) -> ! {
 
 #[zynq7000_rt::irq]
 fn irq_handler() {
-    let mut gic_helper = GicInterruptHelper::new();
-    let irq_info = gic_helper.acknowledge_interrupt();
-    match irq_info.interrupt() {
-        Interrupt::Sgi(_) => (),
-        Interrupt::Ppi(ppi_interrupt) => {
-            if ppi_interrupt == zynq7000_hal::gic::PpiInterrupt::GlobalTimer {
-                unsafe {
-                    zynq7000_embassy::on_interrupt();
-                }
+    let _ = zynq7000_embassy::dispatch_interrupts(|interrupt| match interrupt {
+        zynq7000_hal::gic::Interrupt::Ppi(ppi_interrupt)
+            if ppi_interrupt == zynq7000_hal::gic::PpiInterrupt::GlobalTimer =>
+        {
+            unsafe {
+                zynq7000_embassy::time::on_interrupt();
             }
+            true
         }
-        Interrupt::Spi(_spi_interrupt) => (),
-        Interrupt::Invalid(_) => (),
-        Interrupt::Spurious => (),
-    }
-    gic_helper.end_of_interrupt(irq_info);
+        _ => false,
+    });
 }
 
 #[zynq7000_rt::exception(DataAbort)]

@@ -16,6 +16,71 @@ pub const SCU_BASE_ADDR: usize = MPCORE_BASE_ADDR;
 pub const GICC_BASE_ADDR: usize = MPCORE_BASE_ADDR + 0x100;
 pub const GICD_BASE_ADDR: usize = MPCORE_BASE_ADDR + 0x1000;
 
+#[bitbybit::bitfield(u32, default = 0x0, debug)]
+pub struct PrivateTimerControl {
+    #[bits(8..=15, rw)]
+    prescaler: u8,
+    #[bit(2, rw)]
+    irq_enable: bool,
+    #[bit(1, rw)]
+    auto_reload: bool,
+    #[bit(0, rw)]
+    timer_enable: bool,
+}
+
+#[bitbybit::bitfield(u32, default = 0x0, debug)]
+pub struct PrivateTimerInterruptStatus {
+    #[bit(0, rw)]
+    event_flag: bool,
+}
+
+impl PrivateTimerInterruptStatus {
+    /// Builds a zero-based W1C write that acknowledges the private timer event flag.
+    pub const fn ack_event_flag() -> Self {
+        Self::new_with_raw_value(1)
+    }
+}
+
+#[bitbybit::bitfield(u32, default = 0x0, debug)]
+pub struct WatchdogControl {
+    #[bits(8..=15, rw)]
+    prescaler: u8,
+    #[bit(3, rw)]
+    watchdog_mode: bool,
+    #[bit(2, rw)]
+    it_enable: bool,
+    #[bit(1, rw)]
+    auto_reload: bool,
+    #[bit(0, rw)]
+    watchdog_enable: bool,
+}
+
+#[bitbybit::bitfield(u32, default = 0x0, debug)]
+pub struct WatchdogInterruptStatus {
+    #[bit(0, rw)]
+    event_flag: bool,
+}
+
+impl WatchdogInterruptStatus {
+    /// Builds a zero-based W1C write that acknowledges the watchdog event flag.
+    pub const fn ack_event_flag() -> Self {
+        Self::new_with_raw_value(1)
+    }
+}
+
+#[bitbybit::bitfield(u32, default = 0x0, debug)]
+pub struct WatchdogResetStatus {
+    #[bit(0, rw)]
+    reset_flag: bool,
+}
+
+impl WatchdogResetStatus {
+    /// Builds a zero-based W1C write that acknowledges the watchdog reset flag.
+    pub const fn ack_reset_flag() -> Self {
+        Self::new_with_raw_value(1)
+    }
+}
+
 #[derive(derive_mmio::Mmio)]
 #[repr(C)]
 pub struct SnoopControlUnit {
@@ -66,16 +131,16 @@ pub struct MpCore {
 
     private_timer_load: u32,
     private_timer_counter: u32,
-    private_timer_ctrl: u32,
-    private_interrupt_status: u32,
+    private_timer_ctrl: PrivateTimerControl,
+    private_interrupt_status: PrivateTimerInterruptStatus,
 
     _reserved_2: [u32; 0x4],
 
     watchdog_load: u32,
     watchdog_counter: u32,
-    watchdog_ctrl: u32,
-    watchdog_interrupt_status: u32,
-    watchdog_reset_status: u32,
+    watchdog_ctrl: WatchdogControl,
+    watchdog_interrupt_status: WatchdogInterruptStatus,
+    watchdog_reset_status: WatchdogResetStatus,
     watchdog_disable: u32,
 
     _reserved_3: [u32; 0x272],
@@ -97,5 +162,27 @@ impl MpCore {
     #[inline]
     pub const unsafe fn new_mmio_fixed() -> MmioMpCore<'static> {
         unsafe { Self::new_mmio_at(MPCORE_BASE_ADDR) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    #[test]
+    fn private_timer_ack_event_flag_sets_only_bit_zero() {
+        assert_eq!(PrivateTimerInterruptStatus::ack_event_flag().raw_value(), 1);
+    }
+
+    #[test]
+    fn watchdog_ack_event_flag_sets_only_bit_zero() {
+        assert_eq!(WatchdogInterruptStatus::ack_event_flag().raw_value(), 1);
+    }
+
+    #[test]
+    fn watchdog_ack_reset_flag_sets_only_bit_zero() {
+        assert_eq!(WatchdogResetStatus::ack_reset_flag().raw_value(), 1);
     }
 }

@@ -1,0 +1,59 @@
+[package]
+name = "embassy-zynq7000"
+version = "0.1.0"
+authors = ["Robin Mueller <muellerr@irs.uni-stuttgart.de>"]
+edition = "2024"
+description = "Embassy-first HAL for the AMD Zynq7000 family of SoCs"
+homepage = "https://egit.irs.uni-stuttgart.de/rust/zynq7000-rs"
+repository = "https://egit.irs.uni-stuttgart.de/rust/zynq7000-rs"
+license = "MIT OR Apache-2.0"
+keywords = ["no-std", "arm", "embassy", "amd", "zynq7000"]
+categories = ["embedded", "no-std", "hardware-support"]
+
+[dependencies]
+critical-section = "1"
+once_cell = { version = "1", default-features = false, features = ["critical-section"] }
+thiserror = { version = "2", default-features = false }
+zynq7000 = { path = "../zynq7000", version = "0.1" }
+zynq7000-rt = { path = "../zynq7000-rt" }
+embassy-hal-internal = "0.5"
+embassy-futures = "0.1.2"
+embassy-sync = "0.7"
+embassy-time-driver = "0.2"
+embassy-time-queue-utils = "0.3"
+embassy-usb-driver = "0.2"
+static_assertions = "1.1"
+vcell = "0.1"
+defmt = { version = "1", optional = true }
+embedded-hal = "1"
+embedded-hal-async = "1.0"
+embedded-hal-nb = "1"
+embedded-storage = "0.3.1"
+embedded-storage-async = "0.4.1"
+embedded-io = "0.7"
+embedded-io-async = "0.7"
+fugit = "0.3"
+heapless = "0.9"
+log = "0.4"
+libm = "0.2"
+nb = "1"
+aarch32-cpu = "0.2"
+arbitrary-int = "2"
+ringbuf = { version = "0.4", default-features = false }
+embedded-sdmmc = { git = "https://github.com/robamu/embedded-sdmmc-rs.git", branch = "all-features" }
+
+[features]
+defmt = ["dep:defmt", "embassy-hal-internal/defmt", "zynq7000/defmt"]
+7z010-7z007s-clg225 = []
+
+[package.metadata.embassy]
+build = [
+    { target = "armv7a-none-eabihf", features = [] },
+    { target = "armv7a-none-eabihf", features = ["defmt"] },
+    { target = "armv7a-none-eabihf", features = ["7z010-7z007s-clg225"] },
+    { target = "armv7a-none-eabihf", features = ["defmt", "7z010-7z007s-clg225"] },
+]
+
+[package.metadata.docs.rs]
+targets = ["armv7a-none-eabihf"]
+rustdoc-args = ["--generate-link-to-definition"]

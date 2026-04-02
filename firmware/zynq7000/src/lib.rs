@@ -38,6 +38,7 @@ pub mod slcr;
 pub mod spi;
 pub mod ttc;
 pub mod uart;
+pub mod usb;
 pub mod xadc;
 
 static PERIPHERALS_TAKEN: AtomicBool = AtomicBool::new(false);
@@ -63,6 +64,8 @@ pub struct Peripherals {
     pub slcr: slcr::MmioRegisters<'static>,
     pub ttc_0: ttc::MmioRegisters<'static>,
     pub ttc_1: ttc::MmioRegisters<'static>,
+    pub usb_0: usb::MmioRegisters<'static>,
+    pub usb_1: usb::MmioRegisters<'static>,
     pub eth_0: eth::MmioRegisters<'static>,
     pub eth_1: eth::MmioRegisters<'static>,
     pub qspi: qspi::MmioRegisters<'static>,
@@ -105,6 +108,8 @@ impl Peripherals {
                 i2c_1: i2c::Registers::new_mmio_fixed_1(),
                 ttc_0: ttc::Registers::new_mmio_fixed_0(),
                 ttc_1: ttc::Registers::new_mmio_fixed_1(),
+                usb_0: usb::Registers::new_mmio_fixed_0(),
+                usb_1: usb::Registers::new_mmio_fixed_1(),
                 eth_0: eth::Registers::new_mmio_fixed_0(),
                 eth_1: eth::Registers::new_mmio_fixed_1(),
                 qspi: qspi::Registers::new_mmio_fixed(),

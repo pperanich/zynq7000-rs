@@ -47,6 +47,28 @@ pub struct DualRefAndClockResetSpiUart {
     defmt_bitfields(feature = "defmt"),
     forbid_overlaps
 )]
+pub struct DualRefAndClockReset {
+    /// Periperal 1 Reference software reset.
+    #[bit(3, rw)]
+    periph1_ref_rst: bool,
+    /// Peripheral 0 Reference software reset.
+    #[bit(2, rw)]
+    periph0_ref_rst: bool,
+    /// Peripheral 1 AMBA software reset.
+    #[bit(1, rw)]
+    periph1_cpu1x_rst: bool,
+    /// Peripheral 0 AMBA software reset.
+    #[bit(0, rw)]
+    periph0_cpu1x_rst: bool,
+}
+
+#[bitbybit::bitfield(
+    u32,
+    default = 0x0,
+    debug,
+    defmt_bitfields(feature = "defmt"),
+    forbid_overlaps
+)]
 pub struct DualRefAndClockResetSdio {
     /// Periperal 1 Reference software reset.
     #[bit(5, rw)]

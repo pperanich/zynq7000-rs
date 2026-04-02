@@ -4,6 +4,26 @@ use arbitrary_int::{u2, u5};
 pub const GEM_0_BASE_ADDR: usize = 0xE000_B000;
 pub const GEM_1_BASE_ADDR: usize = 0xE000_C000;
 
+const ETH_INTERRUPT_STATUS_ACK_MASK: u32 = (1 << 26)
+    | (1 << 17)
+    | (1 << 16)
+    | (1 << 15)
+    | (1 << 14)
+    | (1 << 13)
+    | (1 << 12)
+    | (1 << 11)
+    | (1 << 10)
+    | (1 << 9)
+    | (1 << 7)
+    | (1 << 5)
+    | (1 << 3)
+    | (1 << 2)
+    | (1 << 1)
+    | (1 << 0);
+const ETH_TX_STATUS_ACK_MASK: u32 =
+    (1 << 8) | (1 << 7) | (1 << 6) | (1 << 5) | (1 << 4) | (1 << 2) | (1 << 1) | (1 << 0);
+const ETH_RX_STATUS_ACK_MASK: u32 = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
+
 #[bitbybit::bitfield(u32, debug, defmt_bitfields(feature = "defmt"), forbid_overlaps)]
 pub struct NetworkControl {
     #[bit(18, w)]
@@ -284,8 +304,18 @@ pub struct TxStatus {
 }
 
 impl TxStatus {
+    /// Builds a zero-based W1C write that acknowledges all writable TX status bits.
+    pub const fn ack_all() -> Self {
+        Self::new_with_raw_value(ETH_TX_STATUS_ACK_MASK)
+    }
+
+    /// Builds a zero-based W1C write that acknowledges the writable TX status bits in `status`.
+    pub const fn ack_from(status: Self) -> Self {
+        Self::new_with_raw_value(status.raw_value() & ETH_TX_STATUS_ACK_MASK)
+    }
+
     pub fn new_clear_all() -> Self {
-        Self::new_with_raw_value(0xFF)
+        Self::ack_all()
     }
 }
 
@@ -302,8 +332,18 @@ pub struct RxStatus {
 }
 
 impl RxStatus {
+    /// Builds a zero-based W1C write that acknowledges all writable RX status bits.
+    pub const fn ack_all() -> Self {
+        Self::new_with_raw_value(ETH_RX_STATUS_ACK_MASK)
+    }
+
+    /// Builds a zero-based W1C write that acknowledges the writable RX status bits in `status`.
+    pub const fn ack_from(status: Self) -> Self {
+        Self::new_with_raw_value(status.raw_value() & ETH_RX_STATUS_ACK_MASK)
+    }
+
     pub fn new_clear_all() -> Self {
-        Self::new_with_raw_value(0xF)
+        Self::ack_all()
     }
 }
 
@@ -353,6 +393,19 @@ pub struct InterruptStatus {
     frame_received: bool,
     #[bit(0, rw)]
     mgmt_frame_sent: bool,
+}
+
+impl InterruptStatus {
+    /// Builds a zero-based W1C write that acknowledges all writable interrupt status bits.
+    pub const fn ack_all() -> Self {
+        Self::new_with_raw_value(ETH_INTERRUPT_STATUS_ACK_MASK)
+    }
+
+    /// Builds a zero-based W1C write that acknowledges the writable interrupt status bits in
+    /// `status`.
+    pub const fn ack_from(status: Self) -> Self {
+        Self::new_with_raw_value(status.raw_value() & ETH_INTERRUPT_STATUS_ACK_MASK)
+    }
 }
 
 #[bitbybit::bitfield(u32, default = 0x00)]
@@ -518,6 +571,54 @@ pub struct Registers {
 }
 
 static_assertions::const_assert_eq!(core::mem::size_of::<Registers>(), 0x294);
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    #[test]
+    fn interrupt_status_ack_helpers_mask_out_read_only_bits() {
+        let status = InterruptStatus::new_with_raw_value(0xFFFF_FFFF);
+        assert_eq!(
+            InterruptStatus::ack_all().raw_value(),
+            ETH_INTERRUPT_STATUS_ACK_MASK
+        );
+        assert_eq!(
+            InterruptStatus::ack_from(status).raw_value(),
+            ETH_INTERRUPT_STATUS_ACK_MASK
+        );
+        assert_eq!(
+            InterruptStatus::ack_from(InterruptStatus::new_with_raw_value(1 << 6)).raw_value(),
+            0
+        );
+    }
+
+    #[test]
+    fn tx_status_ack_helpers_skip_go_bit() {
+        let status = TxStatus::new_with_raw_value(0xFFFF_FFFF);
+        assert_eq!(TxStatus::ack_all().raw_value(), ETH_TX_STATUS_ACK_MASK);
+        assert_eq!(
+            TxStatus::ack_from(status).raw_value(),
+            ETH_TX_STATUS_ACK_MASK
+        );
+        assert_eq!(
+            TxStatus::ack_from(TxStatus::new_with_raw_value(1 << 3)).raw_value(),
+            0
+        );
+    }
+
+    #[test]
+    fn rx_status_ack_helpers_cover_all_status_bits() {
+        let status = RxStatus::new_with_raw_value(0xFFFF_FFFF);
+        assert_eq!(RxStatus::ack_all().raw_value(), ETH_RX_STATUS_ACK_MASK);
+        assert_eq!(
+            RxStatus::ack_from(status).raw_value(),
+            ETH_RX_STATUS_ACK_MASK
+        );
+    }
+}
 
 /// Ethernet statistics registers
 #[derive(derive_mmio::Mmio)]

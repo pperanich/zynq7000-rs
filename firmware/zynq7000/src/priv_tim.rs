@@ -33,6 +33,13 @@ pub struct InterruptStatus {
     event_flag: bool,
 }
 
+impl InterruptStatus {
+    /// Builds a zero-based W1C write that acknowledges the timer event flag.
+    pub const fn ack_event_flag() -> Self {
+        Self::new_with_raw_value(1)
+    }
+}
+
 /// CPU private timer register access.
 #[derive(derive_mmio::Mmio)]
 #[repr(C)]
@@ -57,5 +64,17 @@ impl Registers {
     #[inline]
     pub const unsafe fn new_mmio_fixed() -> MmioRegisters<'static> {
         unsafe { Registers::new_mmio_at(CPU_PRIV_TIM_BASE_ADDR) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    #[test]
+    fn ack_event_flag_sets_only_bit_zero() {
+        assert_eq!(InterruptStatus::ack_event_flag().raw_value(), 1);
     }
 }

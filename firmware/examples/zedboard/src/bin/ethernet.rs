@@ -35,21 +35,16 @@ use log::{LevelFilter, debug, error, info, warn};
 use rand::{Rng, SeedableRng};
 use zedboard::PS_CLOCK_FREQUENCY;
 use zedboard_bsp::phy_marvell;
+use zynq7000_embassy::{Config as EmbassyConfig, bind_interrupts};
 use zynq7000_hal::{
     BootMode,
-    clocks::Clocks,
-    configure_level_shifter,
     eth::{
         AlignedBuffer, ClockDivSet, EthernetConfig, EthernetLowLevel, embassy_net::InterruptResult,
     },
-    gic::{GicConfigurator, GicInterruptHelper, Interrupt},
     gpio::{GpioPins, Output, PinState},
-    gtc::GlobalTimerCounter,
-    l2_cache,
     uart::{ClockConfig, Config, Uart},
 };
 
-use zynq7000::{Peripherals, slcr::LevelShifterConfig};
 use zynq7000_rt::{self as _, mmu::section_attrs::SHAREABLE_DEVICE, mmu_l1_table_mut};
 
 const USE_DHCP: bool = true;
@@ -58,6 +53,11 @@ const PRINT_PACKET_STATS: bool = false;
 const LOG_LEVEL: LevelFilter = LevelFilter::Info;
 const NUM_RX_SLOTS: usize = 16;
 const NUM_TX_SLOTS: usize = 16;
+
+bind_interrupts!(struct Irqs {
+    GlobalTimer => zynq7000_embassy::time::InterruptHandler;
+    Eth0 => zynq7000_hal::eth::embassy_net::InterruptHandler<zynq7000_hal::eth::Eth0>;
+});
 
 const STATIC_IPV4_CONFIG: StaticConfigV4 = StaticConfigV4 {
     address: Ipv4Cidr::new(Ipv4Addr::new(192, 168, 179, 25), 24),
@@ -202,32 +202,23 @@ async fn tcp_task(mut tcp: TcpSocket<'static>) -> ! {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
-    let mut dp = Peripherals::take().unwrap();
-    l2_cache::init_with_defaults(&mut dp.l2c);
-
-    // Enable PS-PL level shifters.
-    configure_level_shifter(LevelShifterConfig::EnableAll);
+    let platform = zynq7000_embassy::init(EmbassyConfig {
+        ps_clock_frequency: PS_CLOCK_FREQUENCY,
+        hal: zynq7000_hal::Config {
+            init_l2_cache: true,
+            level_shifter_config: Some(zynq7000_hal::LevelShifterConfig::EnableAll),
+            interrupt_config: Some(zynq7000_hal::InterruptConfig::AllInterruptsToCpu0),
+        },
+    })
+    .unwrap();
+    let dp = platform.peripherals;
+    let clocks = platform.clocks;
 
     // Configure the uncached memory region using the MMU.
     mmu_l1_table_mut()
         .update(UNCACHED_ADDR, SHAREABLE_DEVICE)
         .expect("configuring uncached memory section failed");
-
-    // Clock was already initialized by PS7 Init TCL script or FSBL, we just read it.
-    let clocks = Clocks::new_from_regs(PS_CLOCK_FREQUENCY).unwrap();
-    // Set up the global interrupt controller.
-    let mut gic = GicConfigurator::new_with_init(dp.gicc, dp.gicd);
-    gic.enable_all_interrupts();
-    gic.set_all_spi_interrupt_targets_cpu0();
-    gic.enable();
-    unsafe {
-        gic.enable_interrupts();
-    }
     let gpio_pins = GpioPins::new(dp.gpio);
-
-    // Set up global timer counter and embassy time driver.
-    let gtc = GlobalTimerCounter::new(dp.gtc, clocks.arm_clocks());
-    zynq7000_embassy::init(clocks.arm_clocks(), gtc);
 
     // Set up the UART, we are logging with it.
     let uart_clk_config = ClockConfig::new_autocalc_with_error(clocks.io_clocks(), 115200)
@@ -320,8 +311,9 @@ async fn main(spawner: Spawner) -> ! {
     phy.reset();
     phy.restart_auto_negotiation();
 
-    let driver = zynq7000_hal::eth::embassy_net::Driver::new(
+    let driver = zynq7000_hal::eth::embassy_net::Driver::new::<zynq7000_hal::eth::Eth0>(
         &eth,
+        Irqs,
         MAC_ADDRESS,
         zynq7000_hal::eth::embassy_net::DescriptorsAndBuffers::new(
             rx_descr_ref,
@@ -459,38 +451,6 @@ async fn main(spawner: Spawner) -> ! {
             }
         }
     }
-}
-
-#[zynq7000_rt::irq]
-fn irq_handler() {
-    let mut gic_helper = GicInterruptHelper::new();
-    let irq_info = gic_helper.acknowledge_interrupt();
-    match irq_info.interrupt() {
-        Interrupt::Sgi(_) => (),
-        Interrupt::Ppi(ppi_interrupt) => {
-            if ppi_interrupt == zynq7000_hal::gic::PpiInterrupt::GlobalTimer {
-                unsafe {
-                    zynq7000_embassy::on_interrupt();
-                }
-            }
-        }
-        Interrupt::Spi(spi_interrupt) => {
-            if spi_interrupt == zynq7000_hal::gic::SpiInterrupt::Eth0 {
-                // This generic library provided interrupt handler takes care of waking
-                // the driver on received or sent frames while also reporting anomalies
-                // and errors.
-                let result = zynq7000_hal::eth::embassy_net::on_interrupt(
-                    zynq7000_hal::eth::EthernetId::Eth0,
-                );
-                if result.has_errors() {
-                    ETH_ERR_QUEUE.try_send(result).ok();
-                }
-            }
-        }
-        Interrupt::Invalid(_) => (),
-        Interrupt::Spurious => (),
-    }
-    gic_helper.end_of_interrupt(irq_info);
 }
 
 #[zynq7000_rt::exception(DataAbort)]
