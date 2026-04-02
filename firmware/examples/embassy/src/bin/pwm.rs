@@ -11,16 +11,26 @@ use aarch32_cpu::asm::nop;
 use core::panic::PanicInfo;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
-use embassy_zynq7000::{Config as EmbassyConfig, InterruptConfig, L2CacheMode, LevelShifterConfig};
-use embassy_zynq7000::{
-    clocks,
-    gpio::{Output, PinState},
-    log as embassy_log, ttc, uart,
-};
+use embedded_hal::{digital::StatefulOutputPin, pwm::SetDutyCycle};
 use embedded_io::Write;
 use fugit::RateExtU32;
-use log::{LevelFilter, error, info};
+use log::{error, info};
+use zynq7000_hal::{
+    BootMode,
+    clocks::Clocks,
+    gic::{GicConfigurator, GicInterruptHelper, Interrupt},
+    gpio::{Output, PinState, mio},
+    gtc::GlobalTimerCounter,
+    l2_cache,
+    time::Hertz,
+    uart::{ClockConfig, Config, Uart},
+};
+
+use zynq7000::Peripherals;
 use zynq7000_rt as _;
+
+// Define the clock frequency as a constant
+const PS_CLOCK_FREQUENCY: Hertz = Hertz::from_raw(33_333_300);
 
 /// Entry point which calls the embassy main method.
 #[zynq7000_rt::entry]
@@ -30,40 +40,60 @@ fn entry_point() -> ! {
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
-    let p = embassy_zynq7000::init(EmbassyConfig {
-        ps_clock_frequency: zedboard_bsp::PS_CLOCK_FREQUENCY,
-        l2_cache_mode: L2CacheMode::Initialize,
-        level_shifter_config: Some(LevelShifterConfig::EnableAll),
-        interrupt_config: Some(InterruptConfig::AllInterruptsToCpu0),
-    })
-    .unwrap();
+    let mut dp = Peripherals::take().unwrap();
+    l2_cache::init_with_defaults(&mut dp.l2c);
+
+    // Clock was already initialized by PS7 Init TCL script or FSBL, we just read it.
+    let clocks = Clocks::new_from_regs(PS_CLOCK_FREQUENCY).unwrap();
+    // Set up the global interrupt controller.
+    let mut gic = GicConfigurator::new_with_init(dp.gicc, dp.gicd);
+    gic.enable_all_interrupts();
+    gic.set_all_spi_interrupt_targets_cpu0();
+    gic.enable();
+    unsafe {
+        gic.enable_interrupts();
+    }
+    let mio_pins = mio::Pins::new(dp.gpio);
+
+    // Set up global timer counter and embassy time driver.
+    let gtc = GlobalTimerCounter::new(dp.gtc, clocks.arm_clocks());
+    zynq7000_embassy::init(clocks.arm_clocks(), gtc);
 
     // Unwrap is okay, the address is definitely valid.
-    let ttc_0 = ttc::Ttc::new(p.TTC0);
-    let mut pwm = ttc::Pwm::new_with_cpu_clk(ttc_0.ch0, clocks::get(), 1000.Hz()).unwrap();
+    let ttc_0 = zynq7000_hal::ttc::Ttc::new(dp.ttc_0).unwrap();
+    let mut pwm =
+        zynq7000_hal::ttc::Pwm::new_with_cpu_clk(ttc_0.ch0, clocks.arm_clocks(), 1000.Hz())
+            .unwrap();
     pwm.set_duty_cycle_percent(50).unwrap();
 
     // Set up the UART, we are logging with it.
-    let uart_clk_config =
-        uart::ClockConfig::new_autocalc_with_error(clocks::get().io_clocks(), 115200)
-            .unwrap()
-            .0;
-    let mut uart = uart::Uart::new_blocking(
-        p.UART1,
-        p.MIO48,
-        p.MIO49,
-        uart::Config::new_with_clk_config(uart_clk_config),
-    );
+    let uart_clk_config = ClockConfig::new_autocalc_with_error(clocks.io_clocks(), 115200)
+        .unwrap()
+        .0;
+    let mut uart = Uart::new_with_mio_for_uart_1(
+        dp.uart_1,
+        Config::new_with_clk_config(uart_clk_config),
+        (mio_pins.mio48, mio_pins.mio49),
+    )
+    .unwrap();
     uart.write_all(b"-- Zynq 7000 PWM example--\n\r").unwrap();
     // Safety: We are not multi-threaded yet.
-    let (tx, _rx) = uart.split();
-    unsafe { embassy_log::uart_blocking::init_unsafe_single_core(tx, LevelFilter::Trace, false) };
+    unsafe {
+        zynq7000_hal::log::uart_blocking::init_unsafe_single_core(
+            uart,
+            log::LevelFilter::Trace,
+            false,
+        )
+    };
+
+    let boot_mode = BootMode::new_from_regs();
+    info!("Boot mode: {:?}", boot_mode);
 
     let mut ticker = Ticker::every(Duration::from_millis(1000));
-    let mut led = Output::new(p.MIO7, PinState::Low);
+    let mut led = Output::new_for_mio(mio_pins.mio7, PinState::Low);
     let mut current_duty = 0;
     loop {
-        led.toggle();
+        led.toggle().unwrap();
 
         pwm.set_duty_cycle_percent(current_duty).unwrap();
         info!("Setting duty cycle to {current_duty}%");
@@ -74,6 +104,26 @@ async fn main(_spawner: Spawner) -> ! {
 
         ticker.next().await;
     }
+}
+
+#[zynq7000_rt::irq]
+fn irq_handler() {
+    let mut gic_helper = GicInterruptHelper::new();
+    let irq_info = gic_helper.acknowledge_interrupt();
+    match irq_info.interrupt() {
+        Interrupt::Sgi(_) => (),
+        Interrupt::Ppi(ppi_interrupt) => {
+            if ppi_interrupt == zynq7000_hal::gic::PpiInterrupt::GlobalTimer {
+                unsafe {
+                    zynq7000_embassy::on_interrupt();
+                }
+            }
+        }
+        Interrupt::Spi(_spi_interrupt) => (),
+        Interrupt::Invalid(_) => (),
+        Interrupt::Spurious => (),
+    }
+    gic_helper.end_of_interrupt(irq_info);
 }
 
 #[zynq7000_rt::exception(DataAbort)]

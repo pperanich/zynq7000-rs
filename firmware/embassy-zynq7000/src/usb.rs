@@ -523,13 +523,13 @@ impl UsbController {
         unsafe {
             slcr::with_unlocked(|regs| {
                 let assert_reset = match self.id {
-                    UsbId::Usb0 => pac::slcr::reset::UsbResetControl::builder()
+                    UsbId::Usb0 => pac::slcr::reset::DualRefAndClockReset::builder()
                         .with_periph1_ref_rst(false)
                         .with_periph0_ref_rst(true)
                         .with_periph1_cpu1x_rst(false)
                         .with_periph0_cpu1x_rst(true)
                         .build(),
-                    UsbId::Usb1 => pac::slcr::reset::UsbResetControl::builder()
+                    UsbId::Usb1 => pac::slcr::reset::DualRefAndClockReset::builder()
                         .with_periph1_ref_rst(true)
                         .with_periph0_ref_rst(false)
                         .with_periph1_cpu1x_rst(true)
@@ -539,7 +539,7 @@ impl UsbController {
                 regs.reset_ctrl().write_usb(assert_reset);
                 aarch32_cpu::asm::nop();
                 regs.reset_ctrl()
-                    .write_usb(pac::slcr::reset::UsbResetControl::DEFAULT);
+                    .write_usb(pac::slcr::reset::DualRefAndClockReset::DEFAULT);
             });
         }
     }

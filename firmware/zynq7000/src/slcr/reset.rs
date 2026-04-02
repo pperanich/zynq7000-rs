@@ -248,7 +248,7 @@ pub struct ResetControl {
     /// Central interconnect reset control
     topsw: ResetControlInterconnect,
     dmac: ResetControlSingleBit,
-    usb: DualClockReset,
+    usb: DualRefAndClockReset,
     eth: EthernetReset,
     sdio: DualRefAndClockResetSdio,
     spi: DualRefAndClockResetSpiUart,

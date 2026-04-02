@@ -5,9 +5,12 @@ use aarch32_cpu::asm::nop;
 use core::panic::PanicInfo;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
-use embassy_zynq7000::gpio::{self, Output};
-use embassy_zynq7000::{Config, InterruptConfig, L2CacheMode, LevelShifterConfig};
+use embedded_hal::digital::StatefulOutputPin;
 use log::error;
+use zynq7000_hal::{InteruptConfig, clocks, gic, gpio, gtc, time::Hertz};
+
+// Define the clock frequency as a constant
+const PS_CLOCK_FREQUENCY: Hertz = Hertz::from_raw(33_333_300);
 
 /// Entry point which calls the embassy main method.
 #[zynq7000_rt::entry]
@@ -17,19 +20,44 @@ fn entry_point() -> ! {
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
-    let p = embassy_zynq7000::init(Config {
-        ps_clock_frequency: zedboard_bsp::PS_CLOCK_FREQUENCY,
-        l2_cache_mode: L2CacheMode::Initialize,
-        level_shifter_config: Some(LevelShifterConfig::EnableAll),
-        interrupt_config: Some(InterruptConfig::AllInterruptsToCpu0),
+    let periphs = zynq7000_hal::init(zynq7000_hal::Config {
+        init_l2_cache: true,
+        level_shifter_config: Some(zynq7000_hal::LevelShifterConfig::EnableAll),
+        interrupt_config: Some(InteruptConfig::AllInterruptsToCpu0),
     })
     .unwrap();
+    let clocks = clocks::Clocks::new_from_regs(PS_CLOCK_FREQUENCY).unwrap();
+
+    // Set up global timer counter and embassy time driver.
+    let gtc = gtc::GlobalTimerCounter::new(periphs.gtc, clocks.arm_clocks());
+    zynq7000_embassy::init(clocks.arm_clocks(), gtc);
+    let mio_pins = gpio::mio::Pins::new(periphs.gpio);
     let mut ticker = Ticker::every(Duration::from_millis(1000));
-    let mut led = Output::new(p.MIO7, gpio::PinState::Low);
+    let mut led = gpio::Output::new_for_mio(mio_pins.mio7, gpio::PinState::Low);
     loop {
-        led.toggle();
+        led.toggle().unwrap();
         ticker.next().await;
     }
+}
+
+#[zynq7000_rt::irq]
+pub fn irq_handler() {
+    let mut gic_helper = gic::GicInterruptHelper::new();
+    let irq_info = gic_helper.acknowledge_interrupt();
+    match irq_info.interrupt() {
+        gic::Interrupt::Sgi(_) => (),
+        gic::Interrupt::Ppi(ppi_interrupt) => {
+            if ppi_interrupt == zynq7000_hal::gic::PpiInterrupt::GlobalTimer {
+                unsafe {
+                    zynq7000_embassy::on_interrupt();
+                }
+            }
+        }
+        gic::Interrupt::Spi(_spi_interrupt) => (),
+        gic::Interrupt::Invalid(_) => (),
+        gic::Interrupt::Spurious => (),
+    }
+    gic_helper.end_of_interrupt(irq_info);
 }
 
 #[zynq7000_rt::exception(DataAbort)]

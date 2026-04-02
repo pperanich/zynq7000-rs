@@ -14,7 +14,7 @@ categories = ["embedded", "no-std", "hardware-support"]
 critical-section = "1"
 once_cell = { version = "1", default-features = false, features = ["critical-section"] }
 thiserror = { version = "2", default-features = false }
-zynq7000 = { path = "../zynq7000", version = "0.1" }
+zynq7000 = { path = "../zynq7000", version = "0.2" }
 zynq7000-rt = { path = "../zynq7000-rt" }
 embassy-hal-internal = "0.5"
 embassy-futures = "0.1.2"

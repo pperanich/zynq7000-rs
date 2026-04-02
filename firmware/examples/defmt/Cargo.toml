@@ -13,7 +13,6 @@ aarch32-cpu = { version = "0.2" }
 zynq7000-rt = { path = "../../zynq7000-rt" }
 zynq7000 = { path = "../../zynq7000" }
 zynq7000-hal = { path = "../../zynq7000-hal", features = ["defmt"] }
-zedboard-bsp = { path = "../../zedboard-bsp" }
 defmt = "1"
 defmt-rtt = "1"
 embedded-io = "0.7"

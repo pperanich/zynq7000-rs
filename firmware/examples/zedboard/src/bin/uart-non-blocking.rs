@@ -65,17 +65,6 @@ static HEAP: Heap = Heap::empty();
 use zynq7000::{Peripherals, slcr::LevelShifterConfig};
 use zynq7000_rt as _;
 
-#[derive(Copy, Clone)]
-struct Uart0Irqs;
-
-unsafe impl
-    zynq7000_hal::interrupt::typelevel::Binding<
-        zynq7000_hal::interrupt::typelevel::Uart0,
-        zynq7000_hal::uart::InterruptHandler<zynq7000_hal::uart::Uart0>,
-    > for Uart0Irqs
-{
-}
-
 // Define the clock frequency as a constant
 const PS_CLOCK_FREQUENCY: Hertz = Hertz::from_raw(33_333_300);
 
@@ -198,7 +187,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // Set up global timer counter and embassy time driver.
     let gtc = GlobalTimerCounter::new(dp.gtc, clocks.arm_clocks());
-    zynq7000_embassy::time::init(clocks.arm_clocks(), gtc);
+    zynq7000_embassy::init(clocks.arm_clocks(), gtc);
 
     // Set up the UART, we are logging with it.
     let uart_clk_config = ClockConfig::new_autocalc_with_error(clocks.io_clocks(), 115200)
@@ -398,7 +387,7 @@ async fn uartlite_task(uartlite: axi_uartlite::Tx) {
 #[embassy_executor::task]
 async fn uart_0_task(uart_tx: zynq7000_hal::uart::Tx) {
     let mut ticker = Ticker::every(Duration::from_millis(1000));
-    let mut tx_async = zynq7000_hal::uart::TxAsync::new_uart0(uart_tx, Uart0Irqs);
+    let mut tx_async = zynq7000_hal::uart::TxAsync::new(uart_tx);
     let str0 = build_print_string("UART0:", "Hello World");
     let str1 = build_print_string(
         "UART0:",
@@ -449,7 +438,7 @@ fn irq_handler() {
         Interrupt::Ppi(ppi_interrupt) => {
             if ppi_interrupt == zynq7000_hal::gic::PpiInterrupt::GlobalTimer {
                 unsafe {
-                    zynq7000_embassy::time::on_interrupt();
+                    zynq7000_embassy::on_interrupt();
                 }
             }
         }

@@ -11,8 +11,7 @@ use embedded_io::Write;
 use log::{error, info};
 use zedboard::PS_CLOCK_FREQUENCY;
 use zedboard_bsp::qspi_spansion;
-use zynq7000_embassy::{Config as EmbassyConfig, bind_interrupts};
-use zynq7000_hal::{BootMode, gpio, prelude::*, qspi, uart};
+use zynq7000_hal::{BootMode, clocks, gic, gpio, gtc, prelude::*, qspi, uart};
 
 use zynq7000_rt as _;
 
@@ -23,10 +22,6 @@ const QSPI_DEV_COMBINATION: qspi::QspiDeviceCombination = qspi::QspiDeviceCombin
     operating_mode: qspi::OperatingMode::FastReadQuadOutput,
     two_devices: false,
 };
-
-bind_interrupts!(struct Irqs {
-    GlobalTimer => zynq7000_embassy::time::InterruptHandler;
-});
 
 /// Entry point which calls the embassy main method.
 #[zynq7000_rt::entry]
@@ -39,19 +34,20 @@ const TEST_QSPI_BASE: u32 = 0x20000;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
-    let platform = zynq7000_embassy::init(EmbassyConfig {
-        ps_clock_frequency: PS_CLOCK_FREQUENCY,
-        hal: zynq7000_hal::Config {
-            init_l2_cache: true,
-            level_shifter_config: Some(zynq7000_hal::LevelShifterConfig::EnableAll),
-            interrupt_config: Some(zynq7000_hal::InterruptConfig::AllInterruptsToCpu0),
-        },
+    let periphs = zynq7000_hal::init(zynq7000_hal::Config {
+        init_l2_cache: true,
+        level_shifter_config: Some(zynq7000_hal::LevelShifterConfig::EnableAll),
+        interrupt_config: Some(zynq7000_hal::InteruptConfig::AllInterruptsToCpu0),
     })
     .unwrap();
-    let periphs = platform.peripherals;
-    let clocks = platform.clocks;
+    // Clock was already initialized by PS7 Init TCL script or FSBL, we just read it.
+    let clocks = clocks::Clocks::new_from_regs(PS_CLOCK_FREQUENCY).unwrap();
 
     let gpio_pins = gpio::GpioPins::new(periphs.gpio);
+
+    // Set up global timer counter and embassy time driver.
+    let gtc = gtc::GlobalTimerCounter::new(periphs.gtc, clocks.arm_clocks());
+    zynq7000_embassy::init(clocks.arm_clocks(), gtc);
 
     // Set up the UART, we are logging with it.
     let uart_clk_config = uart::ClockConfig::new_autocalc_with_error(clocks.io_clocks(), 115200)
@@ -194,6 +190,26 @@ async fn main(_spawner: Spawner) -> ! {
 
         ticker.next().await; // Wait for the next cycle of the ticker
     }
+}
+
+#[zynq7000_rt::irq]
+fn irq_handler() {
+    let mut gic_helper = gic::GicInterruptHelper::new();
+    let irq_info = gic_helper.acknowledge_interrupt();
+    match irq_info.interrupt() {
+        gic::Interrupt::Sgi(_) => (),
+        gic::Interrupt::Ppi(ppi_interrupt) => {
+            if ppi_interrupt == gic::PpiInterrupt::GlobalTimer {
+                unsafe {
+                    zynq7000_embassy::on_interrupt();
+                }
+            }
+        }
+        gic::Interrupt::Spi(_spi_interrupt) => (),
+        gic::Interrupt::Invalid(_) => (),
+        gic::Interrupt::Spurious => (),
+    }
+    gic_helper.end_of_interrupt(irq_info);
 }
 
 #[zynq7000_rt::exception(DataAbort)]

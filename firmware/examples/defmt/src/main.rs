@@ -7,12 +7,19 @@ use core::panic::PanicInfo;
 use defmt_rtt as _;
 use embedded_hal::{delay::DelayNs, digital::StatefulOutputPin};
 use zynq7000_hal::{
-    InterruptConfig,
+    InteruptConfig,
+    clocks::Clocks,
     gpio::{Output, PinState, mio},
     priv_tim::CpuPrivateTimer,
+    time::Hertz,
 };
 
 pub const LIB: Lib = Lib::Hal;
+
+// Define the clock frequency as a constant.
+//
+// Not required for the PAC mode, is required for clean delays in HAL mode.
+const PS_CLOCK_FREQUENCY: Hertz = Hertz::from_raw(33_333_333);
 
 #[derive(Debug)]
 pub enum Lib {
@@ -22,18 +29,15 @@ pub enum Lib {
 
 #[zynq7000_rt::entry]
 fn main() -> ! {
-    let system = zynq7000_hal::init_system(zynq7000_hal::SystemConfig {
-        ps_clock_frequency: zedboard_bsp::PS_CLOCK_FREQUENCY,
-        hal: zynq7000_hal::Config {
-            init_l2_cache: true,
-            level_shifter_config: Some(zynq7000_hal::LevelShifterConfig::EnableAll),
-            interrupt_config: Some(InterruptConfig::AllInterruptsToCpu0),
-        },
+    let dp = zynq7000_hal::init(zynq7000_hal::Config {
+        init_l2_cache: true,
+        level_shifter_config: Some(zynq7000_hal::LevelShifterConfig::EnableAll),
+        interrupt_config: Some(InteruptConfig::AllInterruptsToCpu0),
     })
     .expect("Failed to initialize Zynq7000");
-    let (dp, clocks) = system.into_parts();
 
     defmt::println!("-- Zynq7000 defmt test application --");
+    let clocks = Clocks::new_from_regs(PS_CLOCK_FREQUENCY).unwrap();
     defmt::info!("clocks {:?}", clocks);
     // Unwrap okay, we only call this once on core 0 here.
     let mut cpu_tim = CpuPrivateTimer::take(clocks.arm_clocks()).unwrap();

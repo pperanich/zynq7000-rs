@@ -15,7 +15,7 @@ use embassy_time::{Delay, Duration, Ticker};
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal_async::delay::DelayNs;
 use embedded_io::Write;
-use l3gd20::asynchronous::i2c::I2cAddr;
+use l3gd20::i2c::I2cAddr;
 use log::{error, info};
 use zynq7000_hal::{
     BootMode,
@@ -31,17 +31,6 @@ use zynq7000_hal::{
 
 use zynq7000::{Peripherals, slcr::LevelShifterConfig};
 use zynq7000_rt as _;
-
-#[derive(Copy, Clone)]
-struct I2c1Irqs;
-
-unsafe impl
-    zynq7000_hal::interrupt::typelevel::Binding<
-        zynq7000_hal::interrupt::typelevel::I2c1,
-        zynq7000_hal::i2c::InterruptHandler<zynq7000_hal::i2c::I2c1>,
-    > for I2c1Irqs
-{
-}
 
 // Define the clock frequency as a constant
 const PS_CLOCK_FREQUENCY: Hertz = Hertz::from_raw(33_333_300);
@@ -77,7 +66,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     // Set up global timer counter and embassy time driver.
     let gtc = GlobalTimerCounter::new(dp.gtc, clocks.arm_clocks());
-    zynq7000_embassy::time::init(clocks.arm_clocks(), gtc);
+    zynq7000_embassy::init(clocks.arm_clocks(), gtc);
 
     // Set up the UART, we are logging with it.
     let uart_clk_config = uart::ClockConfig::new_autocalc_with_error(clocks.io_clocks(), 115200)
@@ -122,12 +111,8 @@ async fn main(_spawner: Spawner) -> ! {
         (gpio_pins.mio.mio12, gpio_pins.mio.mio13),
     )
     .unwrap();
-    let i2c = i2c::I2cAsync::new::<i2c::I2c1>(i2c, I2c1Irqs);
-    let mut l3gd20 =
-        l3gd20::asynchronous::i2c::L3gd20::new(i2c, l3gd20::asynchronous::i2c::I2cAddr::Sa0Low)
-            .await
-            .unwrap();
-    let who_am_i = l3gd20.who_am_i().await.unwrap();
+    let mut l3gd20 = l3gd20::i2c::L3gd20::new(i2c, l3gd20::i2c::I2cAddr::Sa0Low).unwrap();
+    let who_am_i = l3gd20.who_am_i().unwrap();
     info!("L3GD20 WHO_AM_I: 0x{:02X}", who_am_i);
 
     let mut delay = Delay;
@@ -157,7 +142,7 @@ async fn main(_spawner: Spawner) -> ! {
     loop {
         mio_led.toggle().unwrap();
 
-        let measurements = l3gd20.all().await.unwrap();
+        let measurements = l3gd20.all().unwrap();
         info!("L3GD20: {measurements:?}");
         info!("L3GD20 Temp: {:?}", measurements.temp_celcius());
         for led in emio_leds.iter_mut() {
@@ -177,15 +162,11 @@ pub extern "C" fn _irq_handler() {
         Interrupt::Ppi(ppi_interrupt) => {
             if ppi_interrupt == zynq7000_hal::gic::PpiInterrupt::GlobalTimer {
                 unsafe {
-                    zynq7000_embassy::time::on_interrupt();
+                    zynq7000_embassy::on_interrupt();
                 }
             }
         }
-        Interrupt::Spi(spi_interrupt) => {
-            if spi_interrupt == zynq7000_hal::gic::SpiInterrupt::I2c1 {
-                i2c::on_interrupt(i2c::I2cId::I2c1);
-            }
-        }
+        Interrupt::Spi(_spi_interrupt) => (),
         Interrupt::Invalid(_) => (),
         Interrupt::Spurious => (),
     }
