@@ -119,12 +119,12 @@ pub trait TxPin0: MioPin {
 /// Receiver (RX) pin for UART 1.
 pub trait RxPin1: MioPin {
     /// UART index.
-    const UART_IDX: UartId = UartId::Uart0;
+    const UART_IDX: UartId = UartId::Uart1;
 }
 /// Transmitter (TX) pin for UART 1.
 pub trait TxPin1: MioPin {
     /// UART index.
-    const UART_IDX: UartId = UartId::Uart0;
+    const UART_IDX: UartId = UartId::Uart1;
 }
 
 /// UART pin pair trait for UART 0.
